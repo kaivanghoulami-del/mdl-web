@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>🎬 MDL Grabber آنلاین</title>
+<style>
+  :root{--bg:#14171c;--card:#1e232b;--text:#e8eaed;--muted:#9aa0a6;--accent:#3aa0e0}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font:14px/1.8 Tahoma,"Segoe UI",sans-serif}
+  .wrap{max-width:760px;margin:auto;padding:16px}
+  .row{display:flex;gap:8px;margin:12px 0}
+  input{flex:1;background:var(--card);border:1px solid #333;color:var(--text);border-radius:10px;padding:10px;font:inherit}
+  button,.btn{background:var(--accent);border:none;color:#fff;border-radius:10px;padding:8px 14px;cursor:pointer;font:inherit;text-decoration:none;display:inline-block}
+  button.secondary,.btn.secondary{background:#2a3140}
+  .status{margin:8px 0;padding:8px;border-radius:8px;background:#3a2a2a;color:#f2b8b5}
+  .status.ok{background:#1f3326;color:#a5e0b5}
+  .hidden{display:none!important}
+  .card{background:var(--card);border-radius:12px;padding:14px;margin-top:12px}
+  .head{display:flex;gap:12px;flex-wrap:wrap}
+  .head img{width:150px;height:210px;object-fit:cover;border-radius:10px;cursor:zoom-in;background:#000}
+  .score{color:#ffc94d;font-size:17px}
+  .genres span{background:#2a3140;border-radius:20px;padding:2px 10px;font-size:11px;color:var(--muted);display:inline-block;margin:4px 0 0 4px}
+  .syn{margin-top:10px;color:#cfd3d8;font-size:13px}
+  .cast-h{font-size:13px;margin:14px 0 6px;color:var(--accent)}
+  .cast{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:10px}
+  .actor{text-align:center;background:#232a34;border-radius:10px;padding:8px 4px}
+  .actor img{width:72px;height:72px;border-radius:50%;object-fit:cover;cursor:zoom-in;background:#000}
+  .actor .n{font-size:11px;margin:4px 0}
+  .actor .dl{font-size:11px;background:#2a3140;border-radius:8px;padding:3px 8px;color:#9fd0f0;text-decoration:none;display:inline-block}
+  .actor .dl:hover{background:#334052}
+  .result{display:flex;gap:10px;padding:8px;border-radius:10px;cursor:pointer}
+  .result:hover{background:#232a34}
+  .result img{width:50px;height:70px;object-fit:cover;border-radius:8px;background:#000}
+  .actions{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🎬 MDL Grabber — نسخه آنلاین</h1>
+  <div class="row">
+    <input id="searchBox" placeholder="جستجوی فیلم/سریال در MyDramaList..."
+           onkeydown="if(event.key==='Enter')doSearch(this.value.trim())">
+    <button onclick="doSearch($('searchBox').value.trim())">جستجو</button>
+  </div>
+  <div id="status" class="status hidden"></div>
+  <div id="loading" class="hidden">⏳ در حال دریافت...</div>
+  <div id="searchResults"></div>
+  <div id="detail" class="hidden"></div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const safeName=s=>(String(s||"file").replace(/[^\w\- ]+/g,"").trim().slice(0,80)||"file");
+const showStatus=(t,e=true)=>{const s=$("status");s.textContent=t;s.className="status"+(e?"":" ok")};
+const hideStatus=()=>$("status").className="status hidden";
+const setLoading=on=>$("loading").classList.toggle("hidden",!on);
+// لینک دانلود واقعی (سرور عکس رو می‌فرسته به‌صورت attachment)
+const photoDl=(url,name)=>`/api/mdl?type=photo&url=${encodeURIComponent(url)}&name=${encodeURIComponent(safeName(name))}`;
+let current=null;
+
+async function api(p){
+  const r=await fetch("/api/mdl?"+new URLSearchParams(p));
+  const j=await r.json();
+  if(j.error)throw new Error(j.error);
+  return j;
+}
+
+async function doSearch(q){
+  if(!q)return;
+  setLoading(true);hideStatus();
+  try{
+    const res=await api({type:"search",q});
+    $("detail").classList.add("hidden");
+    $("searchResults").innerHTML=res.length?`<div class="card">`+res.map(r=>`
+      <div class="result" onclick="openInfo('${r.slug}')">
+        ${r.poster?`<img src="${esc(r.poster)}">`:`<div style="width:50px;height:70px;background:#000;border-radius:8px"></div>`}
+        <div><b>${esc(r.title)}</b><br>
+        <small style="color:var(--muted)">${esc(r.year)} ${r.rating?"· ⭐ "+esc(r.rating):""}</small></div>
+      </div>`).join("")+`</div>`:`<div class="card">نتیجه‌ای پیدا نشد.</div>`;
+  }catch(e){showStatus("خطا در جستجو: "+e.message)}
+  finally{setLoading(false)}
+}
+
+async function openInfo(slug){
+  setLoading(true);hideStatus();
+  try{current=await api({type:"info",slug});renderDetail(current)}
+  catch(e){showStatus("خطا: "+e.message)}
+  finally{setLoading(false)}
+}
+
+function renderDetail(d){
+  $("searchResults").innerHTML="";
+  const el=$("detail");el.classList.remove("hidden");
+  const total=(d.cast||[]).reduce((n,g)=>n+g.members.length,0);
+  el.innerHTML=`<div class="card">
+    <div class="head">
+      ${d.poster?`<img src="${esc(d.poster)}" title="کلیک: پیش‌نمایش سایز اصلی"
+        onclick="window.open('${esc(d.posterFull)}')">`:""}
+      <div style="flex:1;min-width:200px">
+        <div style="font-size:17px;font-weight:bold">${esc(d.title)}</div>
+        <div>⭐ امتیاز: <b class="score">${esc(d.rating||"—")}</b></div>
+        <div class="genres">${(d.genres||[]).map(g=>`<span>${esc(g)}</span>`).join("")}</div>
+      </div>
+    </div>
+    ${d.synopsis?`<div class="syn">${esc(d.synopsis)}</div>`:""}
+    <div class="actions">
+      <button class="secondary" onclick="copyJson()">📋 کپی JSON</button>
+      <a class="btn secondary" href="${photoDl(d.posterFull||d.poster,(d.slug||"poster")+"-poster")}">🖼️ دانلود پوستر با کیفیت اصلی</a>
+    </div>
+    <h2 style="margin-top:14px">بازیگران (${total}) — اصلی‌ها اول</h2>
+    ${(d.cast||[]).map(g=>`
+      <div class="cast-h">${esc(g.role)} (${g.members.length})</div>
+      <div class="cast">
+        ${g.members.map(c=>`
+          <div class="actor">
+            <img src="${esc(c.photo)}" title="کلیک: پیش‌نمایش سایز اصلی"
+                 onclick="window.open('${esc(c.photoFull)}')">
+            <div class="n">${esc(c.name)}</div>
+            <a class="dl" href="${photoDl(c.photoFull||c.photo,c.name)}">⬇️ دانلود عکس</a>
+          </div>`).join("")}
+      </div>`).join("")||`<div style="color:var(--muted)">بازیگری پیدا نشد.</div>`}
+  </div>`;
+}
+
+async function copyJson(){
+  if(!current)return;
+  await navigator.clipboard.writeText(JSON.stringify(current,null,2));
+  showStatus("✅ JSON کپی شد.",false);
+}
+</script>
+</body>
+</html>
