@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>🎬 MDL Grabber آنلاین</title>
+<title>🎬 MDL Grabber</title>
 <style>
   :root{--bg:#14171c;--card:#1e232b;--text:#e8eaed;--muted:#9aa0a6;--accent:#3aa0e0}
   *{box-sizing:border-box;margin:0;padding:0}
@@ -11,8 +11,8 @@
   .wrap{max-width:760px;margin:auto;padding:16px}
   .row{display:flex;gap:8px;margin:12px 0}
   input{flex:1;background:var(--card);border:1px solid #333;color:var(--text);border-radius:10px;padding:10px;font:inherit}
-  button,.btn{background:var(--accent);border:none;color:#fff;border-radius:10px;padding:8px 14px;cursor:pointer;font:inherit;text-decoration:none;display:inline-block}
-  button.secondary,.btn.secondary{background:#2a3140}
+  button{background:var(--accent);border:none;color:#fff;border-radius:10px;padding:8px 14px;cursor:pointer;font:inherit}
+  button.secondary{background:#2a3140}
   .status{margin:8px 0;padding:8px;border-radius:8px;background:#3a2a2a;color:#f2b8b5}
   .status.ok{background:#1f3326;color:#a5e0b5}
   .hidden{display:none!important}
@@ -37,7 +37,7 @@
 </head>
 <body>
 <div class="wrap">
-  <h1>🎬 MDL Grabber — نسخه آنلاین</h1>
+  <h1>🎬 MDL Grabber — نسخه GitHub</h1>
   <div class="row">
     <input id="searchBox" placeholder="جستجوی فیلم/سریال در MyDramaList..."
            onkeydown="if(event.key==='Enter')doSearch(this.value.trim())">
@@ -49,28 +49,150 @@
   <div id="detail" class="hidden"></div>
 </div>
 <script>
+const BASE="https://mydramalist.com";
+// ۳ پروکسی رایگان — اگه یکیش خطا داد، بعدی امتحان می‌شه
+const PROXIES=[
+  u=>"https://api.allorigins.win/raw?url="+encodeURIComponent(u),
+  u=>"https://api.codetabs.com/v1/proxy?quest="+encodeURIComponent(u),
+  u=>"https://corsproxy.io/?url="+encodeURIComponent(u)
+];
 const $=id=>document.getElementById(id);
 const esc=s=>String(s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const safeName=s=>(String(s||"file").replace(/[^\w\- ]+/g,"").trim().slice(0,80)||"file");
 const showStatus=(t,e=true)=>{const s=$("status");s.textContent=t;s.className="status"+(e?"":" ok")};
 const hideStatus=()=>$("status").className="status hidden";
 const setLoading=on=>$("loading").classList.toggle("hidden",!on);
-// لینک دانلود واقعی (سرور عکس رو می‌فرسته به‌صورت attachment)
-const photoDl=(url,name)=>`/api/mdl?type=photo&url=${encodeURIComponent(url)}&name=${encodeURIComponent(safeName(name))}`;
 let current=null;
 
-async function api(p){
-  const r=await fetch("/api/mdl?"+new URLSearchParams(p));
-  const j=await r.json();
-  if(j.error)throw new Error(j.error);
-  return j;
+async function fetchProxy(url,asBlob=false){
+  let lastErr;
+  for(const p of PROXIES){
+    try{
+      const r=await fetch(p(url));
+      if(!r.ok)throw new Error("HTTP "+r.status);
+      const data=asBlob?await r.blob():await r.text();
+      if(asBlob?data.size>0:data.length>200)return data;
+      throw new Error("empty");
+    }catch(e){lastErr=e}
+  }
+  throw lastErr||new Error("proxy");
+}
+async function getDoc(url){
+  return new DOMParser().parseFromString(await fetchProxy(url),"text/html");
 }
 
+/* ---------- توابع استخراج (همون سلکتورهای قبلی) ---------- */
+const imgSrc=img=>img?(img.getAttribute("data-src")||img.getAttribute("src")||""):"";
+const fullSize=u=>u?u.split("?")[0].replace(/_(\d+)[a-z]?(\.[A-Za-z0-9]+)$/,"_$1f$2"):"";
+const txt=el=>el?el.textContent.trim():"";
+
+function parseSearch(doc){
+  const out=[];
+  doc.querySelectorAll("div.box").forEach(box=>{
+    const h6=box.querySelector("h6.title");
+    const a=h6&&h6.querySelector("a");
+    if(!a)return;
+    const slug=(a.getAttribute("href")||"").split("/").filter(Boolean).pop();
+    if(!/^\d+-/.test(slug))return;
+    const s=box.querySelector("span.score");
+    const y=box.textContent.match(/(19|20)\d{2}/);
+    out.push({title:txt(h6),slug,poster:imgSrc(box.querySelector("img")),
+      rating:s?txt(s):"",year:y?y[0]:""});
+  });
+  return out.slice(0,20);
+}
+
+function parseRating(doc){
+  const hfs=doc.querySelector(".hfs b");
+  if(hfs){const m=hfs.textContent.match(/\d\.\d/);if(m)return m[0]}
+  for(const box of doc.querySelectorAll("div.content-side .box")){
+    const h=box.querySelector(".box-header h3");
+    if(h&&/Statistics/i.test(h.textContent)){
+      for(const li of box.querySelectorAll("li.list-item")){
+        if(/Score:/i.test(li.textContent)){const m=li.textContent.match(/(\d\.\d)/);if(m)return m[1]}
+      }
+    }
+  }
+  const s=doc.querySelector("span.score");
+  if(s){const m=s.textContent.match(/\d\.\d/);if(m)return m[0]}
+  const m2=(doc.body?doc.body.textContent:"").match(/(\d\.\d)\s*\/\s*10/);
+  return m2?m2[1]:"";
+}
+
+function parseDetails(doc){
+  const t=doc.querySelector("h1.film-title")||doc.querySelector("h1");
+  let poster=imgSrc(doc.querySelector("div.film-cover img"));
+  if(!poster){const og=doc.querySelector('meta[property="og:image"]');if(og)poster=og.content||""}
+  const syn=doc.querySelector("div.show-synopsis");
+  const genres=[],info={};
+  doc.querySelectorAll("li.list-item").forEach(li=>{
+    const b=li.querySelector("b");if(!b)return;
+    const key=txt(b).replace(/:$/,"");
+    if(key==="Genres")li.querySelectorAll("a").forEach(a=>genres.push(txt(a)));
+    else info[key]=txt(li).replace(txt(b),"").replace(/^[:\s]+/,"").trim();
+  });
+  return {title:txt(t),poster,posterFull:fullSize(poster),
+    synopsis:syn?syn.innerText.replace(/Edit Translation/g,"").trim():"",
+    rating:parseRating(doc),genres,info};
+}
+
+const ROLE_FA={"main role":"نقش اصلی","support role":"نقش مکمل","guest role":"بازیگر مهمان","host":"مجری / میزبان"};
+const roleLabel=r=>ROLE_FA[String(r).toLowerCase()]||r;
+const prio=r=>{const p=[/main/i,/support/i,/guest/i,/host|narrator/i];
+  for(let i=0;i<p.length;i++)if(p[i].test(r))return i;return 99};
+
+function parseCast(doc){
+  const groups=[];const headers=doc.querySelectorAll("h3.header");
+  const item=li=>{
+    const a=li.querySelector("a.text-primary")||li.querySelector("a.name");
+    if(!a)return null;
+    const b=a.querySelector("b");const name=txt(b)||txt(a);
+    if(!name)return null;
+    const photo=imgSrc(li.querySelector("img"));
+    return {name,photo,photoFull:fullSize(photo),
+      profile:a.getAttribute("href")?BASE+a.getAttribute("href"):""};
+  };
+  if(headers.length){
+    headers.forEach(h=>{
+      let el=h.nextElementSibling;
+      while(el&&el.tagName!=="UL")el=el.nextElementSibling;
+      if(!el)return;
+      const members=[];
+      el.querySelectorAll("li.list-item").forEach(li=>{const m=item(li);if(m)members.push(m)});
+      if(members.length)groups.push({role:txt(h),members});
+    });
+  }else{
+    doc.querySelectorAll("li.list-item").forEach(li=>{
+      const m=item(li);if(m)groups.push({role:"بازیگران",members:[m]});
+    });
+  }
+  groups.sort((a,b)=>prio(a.role)-prio(b.role));
+  return groups;
+}
+
+/* ---------- دانلود با کیفیت اصلی ---------- */
+async function downloadImage(url,filename){
+  showStatus("⏳ در حال آماده‌سازی دانلود: "+filename+" ...",false);
+  try{
+    const blob=await fetchProxy(fullSize(url),true);
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(blob);
+    a.download=safeName(filename)+".jpg";
+    document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href),5000);
+    showStatus("✅ دانلود شد: "+filename,false);
+  }catch(e){
+    window.open(fullSize(url),"_blank");
+    showStatus("دانلود مستقیم نشد؛ عکس سایز اصلی در تب جدید باز شد (راست‌کلیک → Save).");
+  }
+}
+
+/* ---------- جریان برنامه ---------- */
 async function doSearch(q){
   if(!q)return;
   setLoading(true);hideStatus();
   try{
-    const res=await api({type:"search",q});
+    const res=parseSearch(await getDoc(BASE+"/search?q="+encodeURIComponent(q)));
     $("detail").classList.add("hidden");
     $("searchResults").innerHTML=res.length?`<div class="card">`+res.map(r=>`
       <div class="result" onclick="openInfo('${r.slug}')">
@@ -78,14 +200,18 @@ async function doSearch(q){
         <div><b>${esc(r.title)}</b><br>
         <small style="color:var(--muted)">${esc(r.year)} ${r.rating?"· ⭐ "+esc(r.rating):""}</small></div>
       </div>`).join("")+`</div>`:`<div class="card">نتیجه‌ای پیدا نشد.</div>`;
-  }catch(e){showStatus("خطا در جستجو: "+e.message)}
+  }catch(e){showStatus("خطا در جستجو — چند لحظه دیگه دوباره امتحان کن. ("+e.message+")")}
   finally{setLoading(false)}
 }
 
 async function openInfo(slug){
   setLoading(true);hideStatus();
-  try{current=await api({type:"info",slug});renderDetail(current)}
-  catch(e){showStatus("خطا: "+e.message)}
+  try{
+    const d=parseDetails(await getDoc(BASE+"/"+slug));
+    d.slug=slug;d.url=BASE+"/"+slug;
+    try{d.cast=parseCast(await getDoc(BASE+"/"+slug+"/cast"))}catch(e){d.cast=[]}
+    current=d;renderDetail(d);
+  }catch(e){showStatus("خطا در دریافت — دوباره امتحان کن. ("+e.message+")")}
   finally{setLoading(false)}
 }
 
@@ -106,18 +232,18 @@ function renderDetail(d){
     ${d.synopsis?`<div class="syn">${esc(d.synopsis)}</div>`:""}
     <div class="actions">
       <button class="secondary" onclick="copyJson()">📋 کپی JSON</button>
-      <a class="btn secondary" href="${photoDl(d.posterFull||d.poster,(d.slug||"poster")+"-poster")}">🖼️ دانلود پوستر با کیفیت اصلی</a>
+      <button class="secondary" onclick="downloadImage(current.posterFull||current.poster,current.slug+'-poster')">🖼️ دانلود پوستر با کیفیت اصلی</button>
     </div>
     <h2 style="margin-top:14px">بازیگران (${total}) — اصلی‌ها اول</h2>
-    ${(d.cast||[]).map(g=>`
-      <div class="cast-h">${esc(g.role)} (${g.members.length})</div>
+    ${(d.cast||[]).map((g,gi)=>`
+      <div class="cast-h">${esc(roleLabel(g.role))} (${g.members.length})</div>
       <div class="cast">
-        ${g.members.map(c=>`
+        ${g.members.map((c,ci)=>`
           <div class="actor">
             <img src="${esc(c.photo)}" title="کلیک: پیش‌نمایش سایز اصلی"
                  onclick="window.open('${esc(c.photoFull)}')">
             <div class="n">${esc(c.name)}</div>
-            <a class="dl" href="${photoDl(c.photoFull||c.photo,c.name)}">⬇️ دانلود عکس</a>
+            <a class="dl" href="#" onclick="event.preventDefault();downloadImage('${esc(c.photoFull||c.photo)}','${esc(c.name)}')">⬇️ دانلود عکس</a>
           </div>`).join("")}
       </div>`).join("")||`<div style="color:var(--muted)">بازیگری پیدا نشد.</div>`}
   </div>`;
